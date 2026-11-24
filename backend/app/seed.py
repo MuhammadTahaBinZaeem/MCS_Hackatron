@@ -16,7 +16,7 @@ def uid(name: str) -> str:
 def seed_demo(engine, connection=None):
     with (immediate_transaction(engine) if connection is None else nullcontext(connection)) as conn:
         def add(table, **values):
-            conn.execute(insert(table).values(**values).on_conflict_do_nothing())
+            return conn.execute(insert(table).values(**values).on_conflict_do_nothing())
         for code, label in [('EE','EE'),('CSE','CSE'),('IS','IS'),('LIBRARY','Library'),('CAFETERIA','Cafeteria'),('LABS','Labs')]:
             add(s.departments,code=code,label=label)
             add(s.locations,id=uid('loc:'+code),name=label,canonical_path=code,department_id=code,demo=True,active=True)
@@ -41,6 +41,11 @@ def seed_demo(engine, connection=None):
         people=[('student1','STUDENT',None,False),('student2','STUDENT',None,False),('student3','STUDENT',None,False),('admin','ADMIN',None,False),('handler','ADMIN',None,True)] + [('staff_'+code,'STAFF',code,False) for code in ['EE','CSE','IS','LIBRARY','CAFETERIA','LABS']]
         for name,role,dept,cap in people:
             add(s.users,id=uid('user:'+name),role=role,department_id=dept,confidential_capability=cap,verified=True,demo=True,created_at=STAMP,trust_cache=50)
+        for name,delta in [('student2',15),('student3',-10)]:
+            result=add(s.trust_events,id=uid('trust:'+name),user_id=uid('user:'+name),event_key='demo:'+name,delta=delta,reason='SYNTHETIC_DEMO',source_ref='demo',evidence_ref='synthetic',created_at=STAMP)
+            if result.rowcount:
+                from sqlalchemy import update
+                conn.execute(update(s.users).where(s.users.c.id==uid('user:'+name)).values(trust_cache=50+delta))
         fixtures=[('low','Broken chair','FACILITIES','MINOR','NONE','REPORTED','lab3','2026-01-01T11:30:00Z'),('medium','Room light not working','ELECTRICAL','PARTIAL_DISRUPTION','NONE','ACKNOWLEDGED','lab4','2026-01-01T08:00:00Z'),('high','Network unavailable','NETWORK','COMPLETE_DISRUPTION','NONE','PENDING_VERIFICATION','cse_lab3','2025-12-31T08:00:00Z'),('critical','Exposed electrical sparks','SAFETY','MAJOR_DISRUPTION','SAFETY','REPORTED','lab3','2026-01-01T11:45:00Z')]
         for name,title,cat,impact,hazard,status,loc,created in fixtures:
             issue=uid('issue:'+name); dept='CSE' if loc=='cse_lab3' else 'LABS'
@@ -53,6 +58,11 @@ def seed_demo(engine, connection=None):
         add(s.confidential_ownership,case_id=uid('case:example'),user_id=uid('user:student2'))
         add(s.reports,id=uid('report:confidential'),owner_id=uid('user:student2'),case_id=uid('case:example'),visibility='CONFIDENTIAL',safe_extracted_fields='{}',clarification_state='NONE',created_at=STAMP,request_key='seed-confidential')
         add(s.system_settings,key='demo_clock',value=STAMP)
+        for key,title,dept,category,impact,status in [('ee','Lab socket is damaged','EE','ELECTRICAL','MINOR','REPORTED'),('is','Projector unavailable','IS','ACADEMIC','COMPLETE_DISRUPTION','IN_PROGRESS'),('library','Reading area air conditioning slow','LIBRARY','FACILITIES','PARTIAL_DISRUPTION','REOPENED'),('cafeteria','Drinking water unavailable','CAFETERIA','CAFETERIA','COMPLETE_DISRUPTION','REPORTED')]:
+            issue=uid('issue:extra:'+key);created='2026-01-01T10:00:00Z'
+            add(s.issues,id=issue,department_id=dept,location_id=uid('loc:'+dept),category_id=uid('cat:'+category),safe_title=title,safe_description='Synthetic demo: '+title.lower(),impact=impact,hazard='NONE',status=status,created_at=created,updated_at=STAMP,active_since=created)
+            add(s.reports,id=uid('report:extra:'+key),owner_id=uid('user:student2'),issue_id=issue,visibility='PUBLIC',safe_extracted_fields='{}',clarification_state='NONE',created_at=created,request_key='seed-extra-'+key)
+            add(s.issue_participants,id=uid('participant:extra:'+key),issue_id=issue,user_id=uid('user:student2'),source='REPORTER',first_joined=created,valid=True)
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--demo',action='store_true',required=True);parser.parse_args()

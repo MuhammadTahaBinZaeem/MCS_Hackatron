@@ -133,6 +133,19 @@ def vote(issue_id:str,data:Vote,request:Request,session=Depends(get_session)):
             stmt=sqlite_insert(s.issue_participants).values(id=str(uuid.uuid4()),issue_id=issue_id,user_id=session['user_id'],source='SECOND',first_joined=ts,valid=True)
             c.execute(stmt.on_conflict_do_update(index_elements=['issue_id','user_id'],set_={'valid':True}))
         else:c.execute(delete(s.issue_participants).where(s.issue_participants.c.issue_id==issue_id,s.issue_participants.c.user_id==session['user_id'],s.issue_participants.c.source=='SECOND'))
+        clock=timestamp(c,request.app.state.config.demo_mode)
+        recent=c.execute(select(s.community_votes.c.created_at,s.users.c.created_at.label('account_created')).join(s.users,s.users.c.id==s.community_votes.c.user_id).where(s.community_votes.c.issue_id==issue_id,s.community_votes.c.choice==data.choice,s.community_votes.c.valid.is_(True))).all()
+        new_accounts=0
+        for record in recent:
+            try:
+                vote_age=(clock-datetime.fromisoformat(record.created_at.replace('Z','+00:00'))).total_seconds()
+                account_age=(clock-datetime.fromisoformat(record.account_created.replace('Z','+00:00'))).total_seconds()
+                if 0<=vote_age<=60 and 0<=account_age<1800:new_accounts+=1
+            except ValueError:continue
+        if new_accounts>=3:
+            cluster='new-votes:'+issue_id+':'+data.choice+':'+clock.strftime('%Y%m%d%H%M')
+            stmt=sqlite_insert(s.moderation_flags).values(id=str(uuid.uuid4()),issue_id=issue_id,rule='NEW_ACCOUNT_VOTE_CLUSTER',cluster_key=cluster,state='PENDING',reason='Recent new-account voting requires review',created_at=ts)
+            c.execute(stmt.on_conflict_do_nothing(index_elements=['cluster_key']))
     return {'choice':data.choice}
 
 @router.patch('/staff/issues/{issue_id}')

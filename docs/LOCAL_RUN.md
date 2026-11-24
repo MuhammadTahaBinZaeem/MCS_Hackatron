@@ -36,7 +36,9 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/demo/users -WebSession $sess
 
 Mutating API requests require the matching loopback `Origin` header and the operator session cookie. Demo reset operates only in the dedicated `demo` runtime; it removes demo uploads and reseeds the database. Stage 06 must integrate its storage lifecycle with this reset path. The provider failure switch disables Azure calls during the demo.
 
-Attachment screening has an optional local OpenCV YuNet adapter. Set `FACE_MODEL_PATH` to a locally installed, appropriately licensed YuNet model and install compatible `opencv-python` and `numpy` to enable it. Those optional components are not installed or verified by this project. Without them, screening reports `NOT_CONFIGURED` and requires human review; unreviewed images are never sent to Featherless.
+Optional image face screening uses Featherless Qwen3-VL-4B only after explicit consent, and only for a public, image-only upload declared non-sensitive, non-graphic and face-free. The provider result never approves an attachment; public evidence still requires an administrator's manual review. Face screening is unverified for real faces and can miss faces, so do not use it as a safety guarantee. Confidential, sensitive, uncertain, PDF and text uploads are not sent to Featherless.
+
+`START.ps1` installs/builds the local UI, migrates/seeds the isolated synthetic database, starts FastAPI on loopback and opens the judge session. Demo emails at `student.*`/`*.student.*` create synthetic students; `faculty.*`/`*.faculty.*` create synthetic department staff; `hod@faculty.*` creates a synthetic admin. These are explicitly **not** institutional email verification and work only in the local demo runtime.
 
 No deployment tasks. Target Linux/Windows/macOS with Python 3.12, uv, Git and Node LTS/pnpm for Stage 10. Keep instructions compatible with existing environment; check installed versions. Stage 0 implements working local scripts and documents actual commands; examples below are intended contracts, not executed commands yet.
 
@@ -47,7 +49,7 @@ uv run python -m app.seed --demo
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 uv run pytest
 ```
-Run from configured project root or use explicit app directory/module paths; make scripts handle working directory reliably. `/docs` for Swagger, `/api/v1/healthz` and `/api/v1/readyz`. At Stage 10 build the imported frontend (`pnpm install --frozen-lockfile`, `pnpm build` as applicable); serve dist through FastAPI, `/api/v1` not caught by SPA fallback. Document one start command and demo reset. Do not bind to 0.0.0.0. No CDN or network requirement after dependencies installed except optional SMTP/AI.
+Run `START.ps1` from PowerShell for the full local app. `/docs` is the API explorer, `/api/v1/healthz` and `/api/v1/readyz` report service health. Frontend assets build into `web/dist` and are served by FastAPI; API paths are excluded from SPA fallback. Do not bind to `0.0.0.0`. No CDN is used; internet is needed for first-time npm install and optional Azure/Featherless calls.
 
 ## Configuration (.env.example; never actual secrets)
 ```dotenv

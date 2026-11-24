@@ -109,6 +109,9 @@ class OtpRequest(BaseModel):
 class OtpVerify(BaseModel):
     challenge: str = Field(max_length=36)
     code: str = Field(pattern=r'^\d{6}$')
+class DemoRegister(BaseModel):
+    email: str = Field(min_length=3,max_length=254)
+    department: str = Field(default='CSE',pattern=r'^(EE|CSE|IS|LIBRARY|CAFETERIA|LABS)$')
 class Switch(BaseModel):
     user: str = Field(max_length=36)
 class Advance(BaseModel):
@@ -142,6 +145,30 @@ def request_otp(data: OtpRequest, request: Request):
         with immediate_transaction(request.app.state.engine) as conn: conn.execute(delete(s.verification_challenges).where(s.verification_challenges.c.id==challenge))
         err(503,'Email delivery unavailable')
     return {'challenge':challenge,'message':'If eligible, a verification code has been sent.'}
+
+@router.post('/demo/register')
+def demo_register(data: DemoRegister,request:Request,response:Response):
+    """Local presentation account: suffix-based roles are synthetic, never institutional verification."""
+    demo_guard(request)
+    email=data.email.strip().lower()
+    if email.count('@')!=1 or any(ch.isspace() for ch in email):err(400,'Enter a valid demo email address')
+    local,domain=email.split('@')
+    if not local or not domain or len(email)>254:err(400,'Enter a valid demo email address')
+    if domain.startswith('student.') or '.student.' in domain: role='STUDENT';department=None;confidential=False
+    elif domain.startswith('faculty.') or '.faculty.' in domain:
+        role='ADMIN' if local=='hod' else 'STAFF';department=None if role=='ADMIN' else data.department;confidential=False
+    else:err(400,'Use a demo email at a student.* or faculty.* domain')
+    identity=mac(local_keys(request)['identity_hmac'],email)
+    user_id=str(uuid.uuid5(uuid.NAMESPACE_URL,'reportfix-local-demo:'+identity))
+    with immediate_transaction(request.app.state.engine) as conn:
+        row=conn.execute(select(s.users.c.role,s.users.c.department_id).where(s.users.c.id==user_id)).mappings().first()
+        if row and (row['role']!=role or row['department_id']!=department):err(409,'Demo account role is already assigned')
+        if not row:conn.execute(insert(s.users).values(id=user_id,role=role,department_id=department,confidential_capability=confidential,verified=True,demo=True,created_at=stamp(now()),trust_cache=50))
+        old=request.cookies.get(COOKIE)
+        if old:conn.execute(delete(s.sessions).where(s.sessions.c.token_digest==digest(old)))
+        token=create_session(conn,user_id)
+    set_cookie(response,token)
+    return {'verified':True,'synthetic':True,'role':role,'department':department,'institutional_verification':False}
 
 @router.post('/auth/verify-otp')
 def verify_otp(data: OtpVerify, request: Request, response: Response):
@@ -209,7 +236,8 @@ def switch(data: Switch, request: Request, response: Response, session=Depends(o
 def create_student(request: Request, session=Depends(operator)):
     user=str(uuid.uuid4())
     with immediate_transaction(request.app.state.engine) as conn:
-        conn.execute(insert(s.users).values(id=user,role='STUDENT',verified=True,demo=True,created_at=stamp(now())))
+        demo_clock=conn.execute(select(s.system_settings.c.value).where(s.system_settings.c.key=='demo_clock')).scalar()
+        conn.execute(insert(s.users).values(id=user,role='STUDENT',verified=True,demo=True,created_at=demo_clock or stamp(now())))
     return {'selector':user,'role':'STUDENT','synthetic':True}
 
 @router.post('/demo/advance-time')

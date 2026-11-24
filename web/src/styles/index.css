@@ -1,0 +1,12 @@
+@import 'tailwindcss';
+@import './theme.css';
+@config '../../tailwind.config.cjs';
+
+@custom-variant dark (&:is(.dark *));
+@layer base {
+  * { @apply border-border; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  html { @apply overflow-x-hidden; }
+  body { @apply min-h-screen w-full bg-background text-foreground; }
+  button:not(:disabled), [role='button']:not(:disabled) { cursor: pointer; }
+  @media screen and (max-width: 767px) { input, select, textarea { font-size: 16px !important; } }
+}

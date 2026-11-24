@@ -70,7 +70,7 @@ def test_persist_clarify_and_confidential_access(prepared):
         assert client.get('/api/v1/admin/confidential').status_code==403
         assert any(x['reference']==reference for x in client.get('/api/v1/me/reports').json())
         with client.app.state.engine.connect() as conn:
-            assert conn.execute(select(func.count()).select_from(s.issues)).scalar()==5
+            assert conn.execute(select(func.count()).select_from(s.issues)).scalar()==9
         users=client.get('/api/v1/demo/users').json()
         handler=next(x for x in users if x['confidential_capability'])
         client.post('/api/v1/demo/switch-user',headers=ORIGIN,json={'user':handler['selector']})

@@ -5,6 +5,8 @@ import subprocess
 import sys
 import os
 import uuid
+import json
+import base64
 from datetime import timedelta
 from pathlib import Path
 from typing import Literal
@@ -15,6 +17,8 @@ from sqlalchemy import insert,select,update,delete
 from app import schema as s
 from app.database import immediate_transaction
 from app.identity import err,get_session,now,stamp,parse
+from dotenv import dotenv_values
+import httpx
 
 router=APIRouter(prefix='/api/v1')
 EXT={'.jpg':'JPEG','.jpeg':'JPEG','.png':'PNG','.webp':'WEBP','.pdf':'PDF','.txt':'TXT'}
@@ -34,6 +38,20 @@ def detect_faces(image_bytes):
         detector=cv2.FaceDetectorYN.create(model,'',(w,h))
         _,faces=detector.detect(image)
         return 'DETECTED' if faces is not None and len(faces) else 'CLEAR'
+    except Exception:return 'NOT_CONFIGURED'
+
+def featherless_screen(image_bytes, credential_file):
+    """Send only explicitly consented, user-declared non-sensitive images."""
+    try:
+        values=dotenv_values(credential_file);key=values.get('FEATHERLESS_API_KEY','')
+        if not key:return 'NOT_CONFIGURED'
+        payload={'model':'Qwen/Qwen3-VL-4B-Instruct','messages':[{'role':'user','content':[{'type':'text','text':'Is any human face visible in this image? Reply with exactly JSON: {"face_visible": true} or {"face_visible": false}.'},{'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(image_bytes).decode()}}]}],'max_tokens':128,'temperature':0}
+        response=httpx.post('https://api.featherless.ai/v1/chat/completions',headers={'Authorization':'Bearer '+key},json=payload,timeout=12)
+        response.raise_for_status();text=response.json()['choices'][0]['message']['content']
+        start=text.find('{');end=text.rfind('}')
+        parsed=json.loads(text[start:end+1]);visible=parsed.get('face_visible')
+        if type(visible) is not bool:return 'NOT_CONFIGURED'
+        return 'DETECTED' if visible else 'CLEAR'
     except Exception:return 'NOT_CONFIGURED'
 
 def upload_dir(request):
@@ -60,7 +78,7 @@ def cleanup_expired(request):
                 c.execute(delete(s.attachments).where(s.attachments.c.id==row['id']))
 
 @router.post('/attachments')
-async def upload(request:Request,file:UploadFile=File(...),purpose:Literal['MAIN_COMPLAINT','SUPPORTING_EVIDENCE']=Form(...),faces:Literal['YES','NO','UNSURE']=Form(...),nsfw:Literal['YES','NO','UNSURE']=Form(...),sensitive:Literal['YES','NO','UNSURE']=Form(...),public_requested:bool=Form(False),external_consent:bool=Form(False),session=Depends(get_session)):
+async def upload(request:Request,file:UploadFile=File(...),purpose:Literal['MAIN_COMPLAINT','SUPPORTING_EVIDENCE']=Form(...),faces:Literal['YES','NO','UNSURE']=Form(...),nsfw:Literal['YES','NO','UNSURE']=Form(...),sensitive:Literal['YES','NO','UNSURE']=Form(...),public_requested:bool=Form(False),external_consent:bool=Form(False),report_visibility:Literal['PUBLIC','CONFIDENTIAL']=Form('CONFIDENTIAL'),session=Depends(get_session)):
     if session['role']!='STUDENT' or not session['verified']:err(403,'Verified student required')
     cleanup_expired(request)
     filename=file.filename or ''
@@ -96,7 +114,11 @@ async def upload(request:Request,file:UploadFile=File(...),purpose:Literal['MAIN
         from fastapi import HTTPException
         if isinstance(exc,HTTPException):raise
         err(400,'Invalid or unsafe file')
-    detection=detect_faces(derived) if kind in {'JPEG','PNG','WEBP'} else 'NOT_CONFIGURED'
+    detection='NOT_CONFIGURED'
+    if kind in {'JPEG','PNG','WEBP'} and external_consent and report_visibility=='PUBLIC' and faces!='YES' and nsfw=='NO' and sensitive=='NO':
+        png=io.BytesIO()
+        with Image.open(io.BytesIO(derived)) as image:image.save(png,format='PNG')
+        detection=featherless_screen(png.getvalue(),request.app.state.config.azure_credential_file)
     key=uuid.uuid4().hex;clean_key=uuid.uuid4().hex;file_path=safe_path(request,key);derived_path=safe_path(request,clean_key)
     try:
         file_path.write_bytes(raw);derived_path.write_bytes(derived)
@@ -134,6 +156,13 @@ def retrieve(attachment_id:str,request:Request,session=Depends(get_session)):
     if not path.is_file():err(404,'Not found')
     mime='text/plain; charset=utf-8' if public and item['safe_type']=='PDF' else MIME[item['safe_type']]
     return Response(path.read_bytes(),media_type=mime,headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Disposition':'attachment; filename="evidence"'})
+
+@router.get('/admin/attachments')
+def pending_evidence(request:Request,session=Depends(get_session)):
+    if session['role']!='ADMIN':err(403,'Forbidden')
+    with request.app.state.engine.connect() as c:
+        rows=c.execute(select(s.attachments.c.id,s.attachments.c.purpose,s.attachments.c.safe_type,s.attachments.c.size,s.attachments.c.state,s.attachments.c.declared_faces,s.attachments.c.declared_nsfw,s.attachments.c.declared_sensitive,s.attachments.c.created_at).join(s.reports,s.reports.c.id==s.attachments.c.report_id).where(s.attachments.c.state=='PENDING_REVIEW',s.attachments.c.case_id.is_(None),s.attachments.c.public_requested.is_(True),s.reports.c.visibility=='PUBLIC',s.reports.c.issue_id.is_not(None)).order_by(s.attachments.c.created_at)).mappings().all()
+    return [dict(row) for row in rows]
 
 @router.post('/attachments/{attachment_id}/review')
 def review(attachment_id:str,request:Request,faces_checked:bool=Form(...),nsfw_checked:bool=Form(...),pii_checked:bool=Form(...),restricted_checked:bool=Form(...),reason:str=Form(...),session=Depends(get_session)):

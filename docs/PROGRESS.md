@@ -11,10 +11,12 @@ Stage 00 implemented and checked locally. Update after each authorized stage; ne
 | 04 | PARTIAL | Added ordinary issue creation, exact-fingerprint grouping, ambiguous candidates and optional AI comparison, safe board/queues, personal tracking and priority. Latest targeted Stage 04–06 suite: 4 passed. | Broader paraphrase, recurrence, concurrency and privacy acceptance remains unverified; do not treat as accepted. |
 | 05 | PARTIAL | Added active voting, scoped staff transitions, frozen-roster verification, expiry processing, own trust history, evidence-based adjudication, reversal and administrative review. Latest targeted Stage 04–06 suite: 4 passed before final reversal/review changes. | Weighted boundary cases, trust reversal and review code remain unverified. Do not treat as accepted. |
 | 06 | PARTIAL | Added private staged uploads, image re-encoding, local PDF/TXT extraction, owner checks, consent metadata, manual review, retrieval and reset integration. An optional local YuNet hook is present. Latest targeted Stage 04–06 suite: 4 passed before final detector changes. | YuNet model/OpenCV not installed or tested; defaults to NOT_CONFIGURED and manual review. Review/revocation, PDF, cross-user, upload limits, orphan and attack scenarios need verification. Do not treat as accepted. |
-| 07 | NOT STARTED | — | — |
-| 08 | NOT STARTED | — | — |
-| 09 | NOT STARTED | — | — |
-| 10 | NOT STARTED | — | — |
+| 07 | PARTIAL | Trending, aggregate statistics, summary fallback and new-account voting flag implemented. | Full bonus acceptance unverified. |
+| 08 | PARTIAL | Role-specific demo dashboards and synthetic email sign-in implemented. | Bundled fallback has reduced features; full UI build blocked by npm registry connectivity. |
+| 09 | PARTIAL | Demo launch and expanded synthetic fixtures implemented. | Presentation workflow not fully verified. |
+| 10 | PARTIAL | Local loopback server, static fallback and launcher added. Student and staff session and issue APIs returned successfully; frontend returned HTTP 200. | Browser interaction and complete end-to-end acceptance remain unverified. |
+
+Final sprint check: `uv run pytest -q` returned 38 passed before the final demo sign-in and dashboard changes. A live synthetic report returned Azure classification `NETWORK` with a clarification request. Featherless screening missed a cartoon face; manual review remains required. Synthetic suffix-based sign-in is confined to the loopback demo and is not institutional email verification.
 
 Stage 00 files: `.gitignore`, `.env.example`, `.python-version`, `pyproject.toml`, `uv.lock`, `alembic.ini`, `THIRD_PARTY_NOTICES.md`, `backend/app/`, `backend/migrations/`, `backend/tests/test_foundation.py`, `docs/LOCAL_RUN.md`, and this file. Local `.venv/` and `runtime/` are ignored. A local Git repository and origin were initialized; no files were staged or committed. Windows Python was installed using `uv python install 3.12` and the virtual environment created with `uv venv --python 3.12 .venv`.
 

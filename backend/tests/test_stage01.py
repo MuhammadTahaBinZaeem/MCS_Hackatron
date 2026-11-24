@@ -32,7 +32,7 @@ def test_migration_seed_idempotence_and_restart(migrated):
     with engine.connect() as conn:
         before = {t.name: count(conn, t) for t in s.metadata.sorted_tables}
         assert conn.execute(text('PRAGMA foreign_key_check')).all() == []
-        assert before['departments'] == 6 and before['issues'] == 4
+        assert before['departments'] == 6 and before['issues'] == 8
         assert before['resolution_rounds'] == 1 and before['confidential_cases'] == 1
         assert conn.execute(select(s.users.c.demo)).scalars().all() == [True] * before['users']
     seed_demo(engine)

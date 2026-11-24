@@ -15,10 +15,13 @@ from app.reports_api import router as reports_router
 from app.issues import router as issues_router
 from app.community import router as community_router
 from app.attachments import router as attachment_router
+from app.dashboard import router as dashboard_router
 from app.azure_provider import AzureTextProvider
 from app.identity import router as identity_router
 from app import schema
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
+from pathlib import Path
 from fastapi.exceptions import RequestValidationError
 
 
@@ -57,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(issues_router)
     application.include_router(community_router)
     application.include_router(attachment_router)
+    application.include_router(dashboard_router)
 
     @application.exception_handler(RequestValidationError)
     async def validation_error(_request, _exc):
@@ -84,6 +88,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pass
         response.status_code = 503
         return {"status": "not_ready"}
+
+    @application.get('/{asset_path:path}',include_in_schema=False)
+    def frontend(asset_path:str):
+        if asset_path.startswith('api/') or asset_path=='api':return JSONResponse(status_code=404,content={'detail':'Not found'})
+        web_root=Path(__file__).resolve().parents[2]/'web'
+        built=(web_root/'dist').resolve()
+        root=built if (built/'index.html').is_file() else (web_root/'static').resolve()
+        candidate=(root/asset_path).resolve()
+        if not candidate.is_relative_to(root):return JSONResponse(status_code=404,content={'detail':'Not found'})
+        if candidate.is_file():return FileResponse(candidate)
+        index=root/'index.html'
+        if index.is_file():return FileResponse(index)
+        return JSONResponse(status_code=503,content={'detail':'Frontend build not found'})
 
     return application
 
