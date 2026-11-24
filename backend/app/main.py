@@ -11,6 +11,8 @@ from app.config import Settings
 from app.database import create_database, database_ready
 from app.secrets_store import ensure_local_secrets
 from app.registry import router as registry_router
+from app.reports_api import router as reports_router
+from app.azure_provider import AzureTextProvider
 from app.identity import router as identity_router
 from app import schema
 from fastapi.responses import JSONResponse
@@ -25,6 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ensure_local_secrets(config.runtime_dir)
         application.state.engine = create_database(config.runtime_dir)
         application.state.config = config
+        application.state.text_provider = AzureTextProvider(config)
         application.state.request_lock = anyio.Lock()
         if config.demo_mode and config.runtime_dir.name.lower() == 'demo' and inspect(application.state.engine).has_table('users'):
             with application.state.engine.connect() as conn:
@@ -47,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(title="ReportFix", lifespan=lifespan)
     application.include_router(registry_router)
     application.include_router(identity_router)
+    application.include_router(reports_router)
 
     @application.exception_handler(RequestValidationError)
     async def validation_error(_request, _exc):

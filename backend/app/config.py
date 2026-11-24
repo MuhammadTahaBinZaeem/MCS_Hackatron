@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = Field(default="", repr=False)
     smtp_from: str = ""
+    azure_enabled: bool = False
+    azure_credential_file: Path = Path('security/api.env')
+    azure_model_fast: str = 'gpt-5.4-nano'
+    azure_model_standard: str = 'gpt-5.4-mini'
+    azure_model_advanced: str = 'gpt-5.4'
+    azure_model_escalation: str = 'gpt-5.6-luna'
 
     @field_validator("host")
     @classmethod
