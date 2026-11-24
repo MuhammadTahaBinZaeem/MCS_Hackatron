@@ -12,6 +12,9 @@ from app.database import create_database, database_ready
 from app.secrets_store import ensure_local_secrets
 from app.registry import router as registry_router
 from app.reports_api import router as reports_router
+from app.issues import router as issues_router
+from app.community import router as community_router
+from app.attachments import router as attachment_router
 from app.azure_provider import AzureTextProvider
 from app.identity import router as identity_router
 from app import schema
@@ -51,6 +54,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(registry_router)
     application.include_router(identity_router)
     application.include_router(reports_router)
+    application.include_router(issues_router)
+    application.include_router(community_router)
+    application.include_router(attachment_router)
 
     @application.exception_handler(RequestValidationError)
     async def validation_error(_request, _exc):

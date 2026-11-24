@@ -8,8 +8,9 @@ from sqlalchemy import insert, select, update
 from app import schema as s
 from app.azure_provider import AzureTextProvider
 from app.database import immediate_transaction
-from app.identity import err, get_session, require_confidential, stamp, now
+from app.identity import err, get_session, require_confidential, stamp, now, parse
 from app.intelligence import classify_local, location_match, screen, local_details, confidential_details, normalize
+from app.issues import publish, timestamp, semantic_suggestion
 
 router=APIRouter(prefix='/api/v1')
 
@@ -22,9 +23,14 @@ class ReportInput(BaseModel):
     failure_type: Literal['UNAVAILABLE','SLOW','DAMAGED','OTHER'] | None = None
     asset_identifier: str | None = Field(default=None,pattern=r'^(?i:pc|computer|projector|socket)\s*[-#]?\s*\d{1,4}$',max_length=40)
     visibility: Literal['PUBLIC','CONFIDENTIAL']='PUBLIC'
+    merge_issue_id: str | None = Field(default=None,max_length=36)
+    create_separate: bool = False
+    separation_reason: str | None = Field(default=None,max_length=200)
+    attachment_ids: list[str] = Field(default_factory=list,max_length=5)
     @model_validator(mode='after')
     def nonempty(self):
-        if not self.text.strip() and not self.category_id: raise ValueError('Text or category is required')
+        if not self.text.strip() and not self.category_id and not self.attachment_ids: raise ValueError('Text, category or attachment is required')
+        if self.create_separate and not (self.separation_reason or '').strip(): raise ValueError('A reason is required to create a separate issue')
         return self
 
 def student(session):
@@ -129,7 +135,19 @@ def submit(data:ReportInput,request:Request,session=Depends(get_session),idempot
     with request.app.state.engine.connect() as conn:
         old=conn.execute(select(s.reports.c.id,s.reports.c.case_id,s.reports.c.clarification_state).where(s.reports.c.owner_id==session['user_id'],s.reports.c.request_key==idempotency_key)).mappings().first()
         if old:return {'reference':old['id'],'status':'CLARIFICATION_REQUIRED' if old['clarification_state']=='REQUIRED' else 'PENDING','confidential':bool(old['case_id'])}
+        if len(data.attachment_ids)!=len(set(data.attachment_ids)):err(400,'Duplicate attachment')
+        extracted=[];total=0
+        for attachment_id in data.attachment_ids:
+            attachment=conn.execute(select(s.attachments).where(s.attachments.c.id==attachment_id,s.attachments.c.owner_id==session['user_id'],s.attachments.c.report_id.is_(None),s.attachments.c.case_id.is_(None))).mappings().first()
+            if not attachment or (attachment['expires_at'] and parse(attachment['expires_at'])<=now()):err(404,'Attachment not found')
+            total+=attachment['size']
+            if total>25*1024*1024:err(413,'Attachments too large')
+            if attachment['purpose']=='MAIN_COMPLAINT' and attachment['safe_type'] in {'PDF','TXT'}:
+                from app.attachments import safe_path
+                extracted.append(safe_path(request,attachment['sanitized_key']).read_text(encoding='utf-8')[:5000])
+        if extracted:data=data.model_copy(update={'text':(data.text+'\n'+'\n'.join(extracted))[:5000]})
     result=analyze(request,data); report_id=str(uuid.uuid4());case_id=None;ts=stamp(now())
+    suggestion=semantic_suggestion(request,result,data.text) if not data.merge_issue_id and not data.create_separate else None
     with immediate_transaction(request.app.state.engine) as conn:
         old=conn.execute(select(s.reports.c.id,s.reports.c.case_id,s.reports.c.clarification_state).where(s.reports.c.owner_id==session['user_id'],s.reports.c.request_key==idempotency_key)).mappings().first()
         if old:return {'reference':old['id'],'status':'CLARIFICATION_REQUIRED' if old['clarification_state']=='REQUIRED' else 'PENDING','confidential':bool(old['case_id'])}
@@ -139,18 +157,31 @@ def submit(data:ReportInput,request:Request,session=Depends(get_session),idempot
             conn.execute(insert(s.confidential_ownership).values(case_id=case_id,user_id=session['user_id']))
         clean=public_result(result)
         conn.execute(insert(s.reports).values(id=report_id,owner_id=session['user_id'],case_id=case_id,visibility=result['visibility'],private_input=data.text,safe_extracted_fields=json.dumps(clean),clarification_state='REQUIRED' if result['clarification_required'] else 'NONE',created_at=ts,request_key=idempotency_key))
+        if len(data.attachment_ids)!=len(set(data.attachment_ids)):err(400,'Duplicate attachment')
+        total=0
+        for attachment_id in data.attachment_ids:
+            attachment=conn.execute(select(s.attachments).where(s.attachments.c.id==attachment_id,s.attachments.c.owner_id==session['user_id'],s.attachments.c.report_id.is_(None),s.attachments.c.case_id.is_(None))).mappings().first()
+            if not attachment or (attachment['expires_at'] and parse(attachment['expires_at'])<=now()):err(404,'Attachment not found')
+            total+=attachment['size']
+            if total>25*1024*1024:err(413,'Attachments too large')
+            if case_id:conn.execute(update(s.attachments).where(s.attachments.c.id==attachment_id).values(case_id=case_id,state='PRIVATE'))
+            else:conn.execute(update(s.attachments).where(s.attachments.c.id==attachment_id).values(report_id=report_id))
         conn.execute(insert(s.processing_events).values(id=str(uuid.uuid4()),report_id=report_id,kind='classification',mode=result['processing_mode'],provider_label='azure' if result['processing_mode']=='AI' else None,success=True,error_class=result['provider_status'] if result['provider_status'] in {'FAILED','CIRCUIT_OPEN'} else None,latency_ms=result['latency_ms'],created_at=ts))
-    return {'reference':report_id,'status':'CLARIFICATION_REQUIRED' if result['clarification_required'] else 'PENDING','confidential':bool(case_id),'proposal':clean}
+        issue_id,candidates=publish(conn,report_id,session['user_id'],result,timestamp(conn,request.app.state.config.demo_mode),data.merge_issue_id or suggestion,data.create_separate)
+        if candidates:conn.execute(update(s.reports).where(s.reports.c.id==report_id).values(clarification_state='REQUIRED'))
+    return {'reference':report_id,'issue_id':issue_id,'candidates':candidates,'status':'CLARIFICATION_REQUIRED' if result['clarification_required'] or candidates else 'PENDING','confidential':bool(case_id),'proposal':clean}
 
 @router.patch('/reports/{report_id}/clarification')
 def clarify(report_id:str,data:ReportInput,request:Request,session=Depends(get_session)):
     student(session)
     with request.app.state.engine.connect() as conn:
-        existing=conn.execute(select(s.reports.c.id,s.reports.c.case_id,s.reports.c.visibility).where(s.reports.c.id==report_id,s.reports.c.owner_id==session['user_id'])).mappings().first()
+        existing=conn.execute(select(s.reports.c.id,s.reports.c.case_id,s.reports.c.visibility,s.reports.c.issue_id).where(s.reports.c.id==report_id,s.reports.c.owner_id==session['user_id'])).mappings().first()
         if not existing:err(404,'Not found')
+        if existing['issue_id']:err(409,'Published reports cannot be reclassified here')
     if existing['case_id']:
         data=data.model_copy(update={'visibility':'CONFIDENTIAL'})
     result=analyze(request,data);ts=stamp(now())
+    suggestion=semantic_suggestion(request,result,data.text) if not data.merge_issue_id and not data.create_separate else None
     with immediate_transaction(request.app.state.engine) as conn:
         existing=conn.execute(select(s.reports.c.case_id).where(s.reports.c.id==report_id,s.reports.c.owner_id==session['user_id'])).mappings().first()
         if not existing:err(404,'Not found')
@@ -164,14 +195,19 @@ def clarify(report_id:str,data:ReportInput,request:Request,session=Depends(get_s
         clean=public_result(result)
         conn.execute(update(s.reports).where(s.reports.c.id==report_id).values(case_id=case_id,visibility=result['visibility'],private_input=data.text,safe_extracted_fields=json.dumps(clean),clarification_state='REQUIRED' if result['clarification_required'] else 'RESOLVED'))
         conn.execute(insert(s.processing_events).values(id=str(uuid.uuid4()),report_id=report_id,kind='clarification',mode=result['processing_mode'],provider_label='azure' if result['processing_mode']=='AI' else None,success=True,error_class=result['provider_status'] if result['provider_status'] in {'FAILED','CIRCUIT_OPEN'} else None,latency_ms=result['latency_ms'],created_at=ts))
-    return {'reference':report_id,'status':'CLARIFICATION_REQUIRED' if result['clarification_required'] else 'PENDING','confidential':bool(case_id),'proposal':clean}
+        issue_id,candidates=publish(conn,report_id,session['user_id'],result,timestamp(conn,request.app.state.config.demo_mode),data.merge_issue_id or suggestion,data.create_separate)
+        if candidates:conn.execute(update(s.reports).where(s.reports.c.id==report_id).values(clarification_state='REQUIRED'))
+    return {'reference':report_id,'issue_id':issue_id,'candidates':candidates,'status':'CLARIFICATION_REQUIRED' if result['clarification_required'] or candidates else 'PENDING','confidential':bool(case_id),'proposal':clean}
 
 @router.get('/me/reports')
 def my_reports(request:Request,session=Depends(get_session)):
     student(session)
     with request.app.state.engine.connect() as conn:
-        rows=conn.execute(select(s.reports.c.id,s.reports.c.case_id,s.reports.c.created_at,s.reports.c.clarification_state,s.reports.c.safe_extracted_fields,s.reports.c.private_input).where(s.reports.c.owner_id==session['user_id']).order_by(s.reports.c.created_at.desc())).mappings()
-        return [{'reference':r['id'],'confidential':bool(r['case_id']),'created_at':r['created_at'],'clarification_state':r['clarification_state'],'description':r['private_input'],'proposal':json.loads(r['safe_extracted_fields']) if r['safe_extracted_fields'] else None} for r in rows]
+        rows=conn.execute(select(s.reports.c.id,s.reports.c.issue_id,s.reports.c.case_id,s.reports.c.created_at,s.reports.c.clarification_state,s.reports.c.safe_extracted_fields,s.reports.c.private_input).where(s.reports.c.owner_id==session['user_id']).order_by(s.reports.c.created_at.desc())).mappings()
+        reports=[{'reference':r['id'],'issue_id':r['issue_id'],'confidential':bool(r['case_id']),'created_at':r['created_at'],'clarification_state':r['clarification_state'],'description':r['private_input'],'proposal':json.loads(r['safe_extracted_fields']) if r['safe_extracted_fields'] else None} for r in rows]
+        joined=conn.execute(select(s.issue_participants.c.issue_id,s.issue_participants.c.first_joined).where(s.issue_participants.c.user_id==session['user_id'],s.issue_participants.c.source=='SECOND',s.issue_participants.c.valid.is_(True))).mappings()
+        reports.extend({'reference':None,'issue_id':r['issue_id'],'confidential':False,'created_at':r['first_joined'],'clarification_state':'NONE','description':None,'proposal':None} for r in joined)
+        return reports
 
 @router.get('/admin/confidential')
 def confidential_inbox(request:Request,session=Depends(get_session)):

@@ -36,6 +36,8 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/demo/users -WebSession $sess
 
 Mutating API requests require the matching loopback `Origin` header and the operator session cookie. Demo reset operates only in the dedicated `demo` runtime; it removes demo uploads and reseeds the database. Stage 06 must integrate its storage lifecycle with this reset path. The provider failure switch disables Azure calls during the demo.
 
+Attachment screening has an optional local OpenCV YuNet adapter. Set `FACE_MODEL_PATH` to a locally installed, appropriately licensed YuNet model and install compatible `opencv-python` and `numpy` to enable it. Those optional components are not installed or verified by this project. Without them, screening reports `NOT_CONFIGURED` and requires human review; unreviewed images are never sent to Featherless.
+
 No deployment tasks. Target Linux/Windows/macOS with Python 3.12, uv, Git and Node LTS/pnpm for Stage 10. Keep instructions compatible with existing environment; check installed versions. Stage 0 implements working local scripts and documents actual commands; examples below are intended contracts, not executed commands yet.
 
 ```sh

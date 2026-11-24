@@ -218,6 +218,8 @@ def advance(data: Advance, request: Request, session=Depends(operator)):
         value=conn.execute(select(s.system_settings.c.value).where(s.system_settings.c.key=='demo_clock')).scalar_one()
         value=stamp(parse(value)+timedelta(hours=data.hours))
         conn.execute(update(s.system_settings).where(s.system_settings.c.key=='demo_clock').values(value=value))
+        from app.community import expire_rounds
+        expire_rounds(conn,parse(value))
     return {'demo_time':value}
 
 @router.post('/demo/provider-mode')

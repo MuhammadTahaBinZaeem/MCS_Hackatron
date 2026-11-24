@@ -11,6 +11,9 @@ dependencies = [
     "pydantic-settings",
     "rapidfuzz>=3.14.6",
     "openai>=3.58.0",
+    "pillow>=13.0.0",
+    "pypdf>=7.1.1",
+    "python-multipart>=0.0.34",
 ]
 
 [dependency-groups]
