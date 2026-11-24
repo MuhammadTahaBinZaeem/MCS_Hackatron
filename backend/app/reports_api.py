@@ -9,7 +9,7 @@ from app import schema as s
 from app.azure_provider import AzureTextProvider
 from app.database import immediate_transaction
 from app.identity import err, get_session, require_confidential, stamp, now
-from app.intelligence import classify_local, location_match, screen
+from app.intelligence import classify_local, location_match, screen, local_details, confidential_details, normalize
 
 router=APIRouter(prefix='/api/v1')
 
@@ -19,6 +19,8 @@ class ReportInput(BaseModel):
     category_id: str | None = Field(default=None,max_length=36)
     location_id: str | None = Field(default=None,max_length=36)
     location_text: str | None = Field(default=None,max_length=160)
+    failure_type: Literal['UNAVAILABLE','SLOW','DAMAGED','OTHER'] | None = None
+    asset_identifier: str | None = Field(default=None,pattern=r'^(?i:pc|computer|projector|socket)\s*[-#]?\s*\d{1,4}$',max_length=40)
     visibility: Literal['PUBLIC','CONFIDENTIAL']='PUBLIC'
     @model_validator(mode='after')
     def nonempty(self):
@@ -30,25 +32,33 @@ def student(session):
 
 def analyze(request,data):
     checks=screen(data.text,data.visibility)
+    details=local_details(data.text)
+    suggestion=None;selected_subcategory=None;selected_leaf_id=None
     with request.app.state.engine.connect() as conn:
         location,location_error=location_match(conn,data.text,data.location_id,data.location_text)
         category=None
         if data.category_id:
             row=conn.execute(select(s.categories).where(s.categories.c.id==data.category_id,s.categories.c.active.is_(True))).mappings().first()
             if not row: err(400,'Unknown category')
+            selected_leaf_id=row['id']
+            selected_subcategory=row['code'] if row['parent_id'] else None
+            if selected_subcategory=='OTHER':
+                parent=conn.execute(select(s.categories).where(s.categories.c.id==row['parent_id'])).mappings().one()
+                selected_subcategory=parent['code'] if parent['parent_id'] else 'OTHER'
             while row['parent_id']:
                 row=conn.execute(select(s.categories).where(s.categories.c.id==row['parent_id'])).mappings().one()
             category=row['code']
         disabled=conn.execute(select(s.system_settings.c.value).where(s.system_settings.c.key=='provider_unavailable')).scalar()=='true'
+    selected_root=category
     if category=='CONDUCT':
         checks['confidential']=True;checks['sensitive']=True;checks['external_safe']=False
     local=classify_local(data.text)
     conflict=bool(category and category!='OTHER' and local and category!=local)
     category=local or (category if category!='OTHER' else None)
     mode='RULES'; ai_status='NOT_USED'; started=time.monotonic()
-    if checks['confidential']: category='CONDUCT' if data.visibility=='PUBLIC' else (category or 'OTHER')
-    elif checks['hazard']: category='SAFETY'
-    elif not category and checks['external_safe'] and not disabled:
+    if checks['confidential']: category='CONDUCT' if checks['conduct'] or selected_root=='CONDUCT' else (category or 'OTHER')
+    if checks['hazard']: category='SAFETY'
+    elif (not category or not location) and checks['external_safe'] and not disabled and data.text.strip():
         provider=request.app.state.text_provider
         config=request.app.state.config
         primary=config.azure_model_advanced if len(data.text)>300 else config.azure_model_standard if len(data.text)>120 else config.azure_model_fast
@@ -57,22 +67,45 @@ def analyze(request,data):
         if suggestion is None and ai_status=='FAILED' and time.monotonic()-started<6:
             suggestion,ai_status=provider.classify(data.text,model=backup,timeout=max(0.1,12-(time.monotonic()-started)))
         if suggestion:
-            category=suggestion.category.value;mode='AI'
-    # Unrecognized or potentially identifying free text stays restricted until
-    # a human can review it; a known infrastructure keyword is not clearance.
-    sensitive=checks['sensitive'] or (bool(data.text.strip()) and not checks['external_safe'])
+            if not category:category=suggestion.category.value
+            mode='AI'
+            if suggestion.location_candidate and not data.location_text:
+                with request.app.state.engine.connect() as conn:
+                    location,location_error=location_match(conn,data.text,data.location_id,candidate=suggestion.location_candidate)
+    sensitive=checks['sensitive']
     restricted=checks['confidential'] or sensitive
     missing=[]
     if location_error:missing.append(location_error)
-    if not category:missing.append('Clarify the type of problem')
+    if not category or category=='OTHER':missing.append('Clarify the type of problem')
     if conflict:missing.append('Confirm the category; report and selection differ')
     if checks['hazard_uncertain']:missing.append('Confirm whether the hazard is currently present')
     if sensitive and not checks['confidential']:missing.append('Privacy review required')
     if ai_status in {'FAILED','CIRCUIT_OPEN'} and not category:missing.append('Automatic classification unavailable; select a category')
-    return {'category':category or 'OTHER','department':location['department_id'] if location else None,
+    if suggestion and suggestion.clarification_required:missing.append('AI requested clarification; confirm the problem details')
+    impact='MAJOR_DISRUPTION' if checks['hazard'] else details['impact']
+    if impact=='UNKNOWN' and suggestion and suggestion.impact in {'MINOR','PARTIAL_DISRUPTION','COMPLETE_DISRUPTION','MAJOR_DISRUPTION'}:
+        impact=suggestion.impact
+        missing.append('Confirm the suggested level of disruption')
+    if impact=='UNKNOWN' and data.failure_type: impact={'UNAVAILABLE':'COMPLETE_DISRUPTION','SLOW':'PARTIAL_DISRUPTION','DAMAGED':'MINOR','OTHER':'UNKNOWN'}[data.failure_type]
+    if impact=='UNKNOWN':missing.append('Clarify the level of disruption')
+    subtype=selected_subcategory or details['subcategory']
+    if suggestion and not subtype and suggestion.subcategory:
+        with request.app.state.engine.connect() as conn:
+            root=conn.execute(select(s.categories.c.id).where(s.categories.c.parent_id.is_(None),s.categories.c.code==category)).scalar()
+            if root and conn.execute(select(s.categories.c.id).where(s.categories.c.parent_id==root,s.categories.c.code==suggestion.subcategory.upper(),s.categories.c.active.is_(True))).first():subtype=suggestion.subcategory.upper()
+    failure=data.failure_type or details['failure_type']
+    if not failure and suggestion and suggestion.failure_type in {'UNAVAILABLE','SLOW','DAMAGED','OTHER'}:failure=suggestion.failure_type
+    asset=data.asset_identifier or details['asset_identifier']
+    if not asset and suggestion and suggestion.asset_identifier and normalize(suggestion.asset_identifier) in normalize(data.text):asset=suggestion.asset_identifier
+    if (checks['hazard'] and selected_root!='SAFETY') or (checks['conduct'] and selected_root not in {None,'CONDUCT'}):
+        subtype=None;selected_leaf_id=None
+    label=(subtype or category or 'problem').replace('_',' ').lower()
+    reason=('Potential safety hazard requires urgent attention' if checks['hazard'] else f"{label.capitalize()} reported; disruption: {impact.replace('_',' ').lower()}")
+    return {'category':category or 'OTHER','selected_category_id':selected_leaf_id,'subcategory':subtype,'failure_type':failure,'asset_identifier':asset,'impact':impact,
+            'department':location['department_id'] if location and not missing else None,
             'location_id':location['id'] if location else None,'location':location['name'] if location else None,
             'priority_proposal':100 if checks['hazard'] else None,
-            'reason':'Potential safety hazard requires urgent attention' if checks['hazard'] else 'Report requires classification and review',
+            'reason':reason,
             'emergency_guidance':'Move away from danger and contact the appropriate emergency services.' if checks['hazard'] else None,
             'visibility':'CONFIDENTIAL' if checks['confidential'] else 'RESTRICTED' if restricted else 'PUBLIC',
             'clarification_required':bool(missing),'clarifications':missing,'processing_mode':mode,'provider_status':ai_status,
@@ -81,8 +114,8 @@ def analyze(request,data):
 def public_result(result):
     return {k:v for k,v in result.items() if k not in {'privacy_screen','latency_ms'}}
 
-def safe_case_content(result):
-    return f"Category: {result['category']}; location: {result['location'] or 'unconfirmed'}; hazard: {'potential safety hazard' if result['priority_proposal']==100 else 'not identified'}."
+def safe_case_content(result, raw_text):
+    return f"{confidential_details(raw_text)}. Location: {result['location'] or 'unconfirmed'}. Further detail may require confidential follow-up."
 
 @router.post('/reports/preview')
 def preview(data:ReportInput,request:Request,session=Depends(get_session)):
@@ -102,7 +135,7 @@ def submit(data:ReportInput,request:Request,session=Depends(get_session),idempot
         if old:return {'reference':old['id'],'status':'CLARIFICATION_REQUIRED' if old['clarification_state']=='REQUIRED' else 'PENDING','confidential':bool(old['case_id'])}
         if result['visibility'] in {'CONFIDENTIAL','RESTRICTED'}:
             case_id=str(uuid.uuid4())
-            conn.execute(insert(s.confidential_cases).values(id=case_id,safe_content=safe_case_content(result),status='OPEN',hazard='SAFETY' if result['priority_proposal']==100 else 'NONE',created_at=ts,updated_at=ts))
+            conn.execute(insert(s.confidential_cases).values(id=case_id,safe_content=safe_case_content(result,data.text),status='OPEN',hazard='SAFETY' if result['priority_proposal']==100 else 'NONE',created_at=ts,updated_at=ts))
             conn.execute(insert(s.confidential_ownership).values(case_id=case_id,user_id=session['user_id']))
         clean=public_result(result)
         conn.execute(insert(s.reports).values(id=report_id,owner_id=session['user_id'],case_id=case_id,visibility=result['visibility'],private_input=data.text,safe_extracted_fields=json.dumps(clean),clarification_state='REQUIRED' if result['clarification_required'] else 'NONE',created_at=ts,request_key=idempotency_key))
@@ -124,10 +157,10 @@ def clarify(report_id:str,data:ReportInput,request:Request,session=Depends(get_s
         case_id=existing['case_id']
         if not case_id and result['visibility'] in {'CONFIDENTIAL','RESTRICTED'}:
             case_id=str(uuid.uuid4())
-            conn.execute(insert(s.confidential_cases).values(id=case_id,safe_content=safe_case_content(result),status='OPEN',hazard='SAFETY' if result['priority_proposal']==100 else 'NONE',created_at=ts,updated_at=ts))
+            conn.execute(insert(s.confidential_cases).values(id=case_id,safe_content=safe_case_content(result,data.text),status='OPEN',hazard='SAFETY' if result['priority_proposal']==100 else 'NONE',created_at=ts,updated_at=ts))
             conn.execute(insert(s.confidential_ownership).values(case_id=case_id,user_id=session['user_id']))
         elif case_id:
-            conn.execute(update(s.confidential_cases).where(s.confidential_cases.c.id==case_id).values(safe_content=safe_case_content(result),hazard='SAFETY' if result['priority_proposal']==100 else 'NONE',updated_at=ts))
+            conn.execute(update(s.confidential_cases).where(s.confidential_cases.c.id==case_id).values(safe_content=safe_case_content(result,data.text),hazard='SAFETY' if result['priority_proposal']==100 else 'NONE',updated_at=ts))
         clean=public_result(result)
         conn.execute(update(s.reports).where(s.reports.c.id==report_id).values(case_id=case_id,visibility=result['visibility'],private_input=data.text,safe_extracted_fields=json.dumps(clean),clarification_state='REQUIRED' if result['clarification_required'] else 'RESOLVED'))
         conn.execute(insert(s.processing_events).values(id=str(uuid.uuid4()),report_id=report_id,kind='clarification',mode=result['processing_mode'],provider_label='azure' if result['processing_mode']=='AI' else None,success=True,error_class=result['provider_status'] if result['provider_status'] in {'FAILED','CIRCUIT_OPEN'} else None,latency_ms=result['latency_ms'],created_at=ts))

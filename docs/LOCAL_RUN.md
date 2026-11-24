@@ -14,7 +14,16 @@ uv run python -m app
 
 In another terminal, run `uv run pytest -q` and visit `http://127.0.0.1:8000/api/v1/healthz` or `/api/v1/readyz`. `uv sync --locked` uses the lockfile; do not copy `security/api.env` into `.env` or expose credentials. On POSIX shells, use `export PYTHONPATH=backend`. The domain migration and demo seed are implemented, while user workflows are not yet implemented. On first startup the app creates local secrets in the ignored runtime directory and restricts its directory to the current user; do not share this directory. The local environment must permit `whoami` and `icacls` on Windows.
 
-Stage 03 adds complaint preview, pending submissions, clarification and confidential case handling; public issue creation is deferred. The Azure adapter is disabled by default. To enable it locally, set `AZURE_ENABLED=true` and `AZURE_CREDENTIAL_FILE` to the ignored credential file (default `security/api.env`), which must contain `endpoint` and `key`; never copy the credentials into tracked files. Only narrowly screened non-sensitive text can reach Azure; unknown text is restricted for review. Local matching remains available offline. Real OTP requires `DEMO_MODE=false`, a separate runtime directory whose name is not `demo`, an approved `ALLOWED_STUDENT_EMAIL_DOMAINS` list, and configured SMTP with STARTTLS. No real identities are permitted in demo mode.
+Stage 03 adds complaint preview, pending submissions, clarification and confidential case handling; public issue creation is deferred. The Azure adapter is disabled by default. To enable it in PowerShell from the project root, without displaying credentials:
+
+```powershell
+$env:AZURE_ENABLED = 'true'
+$env:AZURE_CREDENTIAL_FILE = 'security/api.env'
+$env:PYTHONPATH = 'backend'
+uv run python -m app
+```
+
+The ignored credential file must contain `endpoint` and `key`; never copy credentials into tracked files. Azure receives locally derived safe concepts only; sensitive or uncertain text is never sent. Unrecognized words alone do not restrict an ordinary report. Local matching remains available offline. Real OTP requires `DEMO_MODE=false`, a separate runtime directory whose name is not `demo`, an approved `ALLOWED_STUDENT_EMAIL_DOMAINS` list, and configured SMTP with STARTTLS. No real identities are permitted in demo mode.
 
 For local synthetic judge controls, first start the seeded app in demo mode, then bootstrap an operator session from the local capability file (do not share it):
 
@@ -25,7 +34,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/demo/bootstrap 
 Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/demo/users -WebSession $session
 ```
 
-Mutating API requests require the matching loopback `Origin` header and the operator session cookie. Demo reset operates only in the dedicated `demo` runtime; it removes demo uploads and reseeds the database. Stage 06 must integrate its storage lifecycle with this reset path. The provider failure switch is recorded for later provider adapters; no live provider exists at this stage.
+Mutating API requests require the matching loopback `Origin` header and the operator session cookie. Demo reset operates only in the dedicated `demo` runtime; it removes demo uploads and reseeds the database. Stage 06 must integrate its storage lifecycle with this reset path. The provider failure switch disables Azure calls during the demo.
 
 No deployment tasks. Target Linux/Windows/macOS with Python 3.12, uv, Git and Node LTS/pnpm for Stage 10. Keep instructions compatible with existing environment; check installed versions. Stage 0 implements working local scripts and documents actual commands; examples below are intended contracts, not executed commands yet.
 
