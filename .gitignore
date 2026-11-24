@@ -1,0 +1,30 @@
+# Local credentials and environments
+security/
+.env
+.env.*
+!.env.example
+.venv/
+
+# Local application data and generated files
+runtime/
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+uploads/
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+# Organizer material requires permission before publication.
+docs/PROBLEM_STATEMENT.md

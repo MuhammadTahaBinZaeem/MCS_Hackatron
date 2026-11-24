@@ -1,0 +1,27 @@
+# Actual implementation progress
+
+Stage 00 implemented and checked locally. Update after each authorized stage; never infer PASS from the plan.
+
+| Stage | Status | Evidence / commands | Limitations |
+|---|---|---|---|
+| 00 | PASS | Python 3.12.11; `uv sync` and `uv sync --locked`; `uv run alembic upgrade head`; `uv run pytest -q`: 7 passed, 1 warning; actual loopback HTTP health/readiness both succeeded; `git check-ignore -v` verified credentials, runtime, environment, and organizer statement exclusions; Windows secret ACL inspected with `icacls` | Disabled providers only; no live AI/SMTP probe; Starlette warns that httpx-based TestClient is deprecated; logging filter protects configured secret values on application loggers, not arbitrary third-party logs; no user or complaint flows yet. |
+| 01 | PASS | `uv run alembic upgrade head`; `uv run python -m app.seed --demo` twice with `PYTHONPATH=backend`; `uv run pytest -q backend/tests/test_stage01.py`: 10 passed; `uv run pytest -q`: 17 passed, 11 noncritical deprecation warnings. Isolated fresh migrations, idempotence, persistence, FK/unique/partial-index checks, immutable trust ledger, rollback and registry endpoints verified. | Synthetic fixtures and locations only. Registry routes are intentionally unauthenticated until Stage 02. Demo clock is a fixed fixture; clock-control logic is not implemented. No authentication, complaint processing, voting logic, upload processing or live integrations. |
+| 02 | PASS | `uv run pytest -q`: 22 passed, 16 existing/noncritical warnings; after demo upload-reset change `uv run pytest -q backend/tests/test_stage02.py`: 5 passed, 6 warnings. Tests cover OTP expiry/attempts/replay/concurrency, identity uniqueness, sessions, role checks, origin guard, demo switch/create/time/provider setting/reset, stale sessions and synthetic upload cleanup. | SMTP tested with a stub only; live delivery not configured or verified. The failure switch is stored for future AI adapters, which do not yet exist. Department authorization is a reusable helper; department queues arrive in a later stage. Demo operator bootstrap requires the local protected capability file. |
+| 03 | NOT STARTED | — | — |
+| 04 | NOT STARTED | — | — |
+| 05 | NOT STARTED | — | — |
+| 06 | NOT STARTED | — | — |
+| 07 | NOT STARTED | — | — |
+| 08 | NOT STARTED | — | — |
+| 09 | NOT STARTED | — | — |
+| 10 | NOT STARTED | — | — |
+
+Stage 00 files: `.gitignore`, `.env.example`, `.python-version`, `pyproject.toml`, `uv.lock`, `alembic.ini`, `THIRD_PARTY_NOTICES.md`, `backend/app/`, `backend/migrations/`, `backend/tests/test_foundation.py`, `docs/LOCAL_RUN.md`, and this file. Local `.venv/` and `runtime/` are ignored. A local Git repository and origin were initialized; no files were staged or committed. Windows Python was installed using `uv python install 3.12` and the virtual environment created with `uv venv --python 3.12 .venv`.
+
+Startup acceptance: after `uv run alembic upgrade head`, start the application with `PYTHONPATH=backend` and `uv run python -m app`; a local HTTP client received `ok` and `ready` from the two `/api/v1` endpoints. Temporary tests exercised SQLite foreign keys, WAL, busy timeout, configuration rejection, unavailable providers, persistent and invalid local secrets, log redaction, readiness failure and HTTP responses. No live provider or SMTP calls were made.
+
+Stage 01 files: `backend/app/schema.py`, `backend/app/seed.py`, `backend/app/registry.py`, `backend/app/database.py`, `backend/app/main.py`, `backend/migrations/env.py`, `backend/migrations/versions/001_domain.py`, `backend/migrations/versions/002_report_visibility.py`, `backend/tests/test_stage01.py`, `docs/LOCAL_RUN.md`, and this file. No dependencies added. The existing synthetic demo fixture rows from the first seed run were updated only by their known synthetic IDs to align their timestamps and visibility with the final seed; subsequent seeding does not overwrite records. No files staged, committed, or pushed.
+
+Stage 02 files: `backend/app/identity.py`, `backend/app/main.py`, `backend/app/config.py`, `backend/app/seed.py`, `backend/tests/test_stage02.py`, `.env.example`, `docs/LOCAL_RUN.md`, and this file. No dependencies added. Real OTP uses a dedicated non-demo runtime; demo controls require loopback, a synthetic database, an operator capability, and same-origin mutations. Session and OTP identifiers are stored as digests; raw email is not persisted. No live SMTP or AI request was sent. Git synchronization is separately reported after the secret audit and push.
+
+Next authorization required: Stage 03. Confirm Stage 02 evidence before starting. PASS means required stage gate passed; optional live provider checks are separately recorded. BLOCKED/PARTIAL means no advancement until reviewed.

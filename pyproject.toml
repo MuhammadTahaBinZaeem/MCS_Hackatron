@@ -1,0 +1,13 @@
+[project]
+name = "reportfix"
+version = "0.0.1"
+description = "Local ReportFix foundation"
+requires-python = ">=3.12,<3.13"
+dependencies = ["fastapi", "uvicorn", "sqlalchemy", "alembic", "pydantic-settings"]
+
+[dependency-groups]
+dev = ["pytest", "httpx", "hypothesis"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
